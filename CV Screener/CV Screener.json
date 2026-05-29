@@ -1,0 +1,317 @@
+{
+  "name": "CV Screener",
+  "nodes": [
+    {
+      "parameters": {
+        "url": "={{ 'https://www.googleapis.com/drive/v3/files/' + $json['Upload your CV'].split('id=')[1] + '?alt=media' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "cv_binary"
+            }
+          }
+        }
+      },
+      "id": "12fbfe91-f153-4802-a714-f600b6ea127f",
+      "name": "Fetch CV from Drive",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1328,
+        112
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "b48ZpqJkRgKGQouN",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const binaryData = $input.first().binary?.cv_binary;\nif (!binaryData) { throw new Error('No CV file found'); }\n\nconst base64 = binaryData.data;\nconst mimeType = binaryData.mimeType || 'application/pdf';\nconst formData = $input.first().json;\n\nreturn [{\n  json: {\n    cv_base64: base64,\n    cv_mime_type: mimeType,\n    applicant_name: formData['Full Name'],\n    applicant_email: formData['Email'],\n    role: formData['Role Applying For'],\n    experience_years: formData['Year of Experience'],\n    submitted_at: formData['Timestamp'],\n  }\n}];\n"
+      },
+      "id": "7711a21b-827a-467a-b60a-9182f1747528",
+      "name": "Extract CV Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1104,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer your_groq-key"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={\n  \"model\": \"llama-3.1-8b-instant\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"You are a senior recruiter screening CVs for a {{ $json.role }} role. Candidate has {{ $json.experience_years }} years of experience. Respond ONLY with valid JSON. Keys: score (int 1-10), strengths (string), gaps (string), recommendation (exactly: Strong Yes, Yes, or No).\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "4eb4e64e-e31c-487e-8d83-a4a9ecf04d94",
+      "name": "Groq AI Screening",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -880,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const groqResponse = $input.first().json;\nconst rawText = groqResponse.choices[0].message.content;\n\nconst cleaned = rawText.replace(/```json/g, '').replace(/```/g, '').trim();\n\nlet screening;\ntry {\n  screening = JSON.parse(cleaned);\n} catch (e) {\n  throw new Error('Groq returned invalid JSON: ' + rawText);\n}\n\nconst prev = $('Extract CV Data').first().json;\n\nreturn [{\n  json: {\n    ...prev,\n    ai_score: parseInt(screening.score),\n    ai_strengths: screening.strengths,\n    ai_gaps: screening.gaps,\n    ai_recommendation: screening.recommendation\n  }\n}];"
+      },
+      "id": "e2a92481-326a-4b56-be25-d795aa76b813",
+      "name": "Parse Groq Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -656,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.notion.com/v1/pages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer your-node-token"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Notion-Version",
+              "value": "2022-06-28"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={\n  \"parent\": { \"database_id\": \"36f8b31a5334806b923ad4c403b982de\" },\n  \"properties\": {\n    \"Name\": { \"title\": [{ \"text\": { \"content\": \"{{$json.applicant_name}}\" } }] },\n    \"Email\": { \"email\": \"{{$json.applicant_email}}\" },\n    \"Role\": { \"select\": { \"name\": \"{{$json.role}}\" } },\n    \"AI Score\": { \"number\": {{$json.ai_score}} },\n    \"Strengths\": { \"rich_text\": [{ \"text\": { \"content\": \"{{$json.ai_strengths}}\" } }] },\n    \"Gaps\": { \"rich_text\": [{ \"text\": { \"content\": \"{{$json.ai_gaps}}\" } }] },\n    \"Recommendation\": { \"select\": { \"name\": \"{{$json.ai_recommendation}}\" } },\n    \"Applied At\": { \"date\": { \"start\": \"{{new Date($json.submitted_at).toISOString()}}\" } },\n    \"Status\": { \"status\": { \"name\": \"To Review\" } }\n  }\n}",
+        "options": {}
+      },
+      "id": "d720d593-dd7c-4310-ad06-70d0f27e9bc0",
+      "name": "Create Notion Card",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -448,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "condition-1",
+              "leftValue": "={{ $json.properties['AI Score'].number }}",
+              "rightValue": 5,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "847d233c-4627-42e5-8f2e-b5e3c8651b4a",
+      "name": "Score >= 7?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "documentId": {
+          "__rl": true,
+          "value": "12ffJS9EZFQoJ5Aahn-KCA8IrJiuvHoxy5ETn3T7EUaI",
+          "mode": "list",
+          "cachedResultName": "Blank Quiz (Responses)",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/12ffJS9EZFQoJ5Aahn-KCA8IrJiuvHoxy5ETn3T7EUaI/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1675045385,
+          "mode": "list",
+          "cachedResultName": "Form Responses 1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/12ffJS9EZFQoJ5Aahn-KCA8IrJiuvHoxy5ETn3T7EUaI/edit#gid=1675045385"
+        },
+        "event": "rowAdded",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheetsTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1520,
+        112
+      ],
+      "id": "87c36b52-a284-4dd8-b6d6-73a55fdddad5",
+      "name": "Google Sheets Trigger1",
+      "credentials": {
+        "googleSheetsTriggerOAuth2Api": {
+          "id": "9pg3DIYipD4hDofh",
+          "name": "Google Sheets Trigger account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "rabeehakamran801@gmail.com",
+        "subject": "Potential Candidate Found – CV Screening Alert",
+        "message": "=<h2>Potential Candidate Found</h2>  <p>Hello Recruiter,</p>  <p>A new candidate has successfully passed the AI CV screening threshold.</p>  <ul>   <li><strong>Candidate Name:</strong>{{ $('Google Sheets Trigger1').item.json.Score }} </li>   <li><strong>Email:</strong> {{ $('Google Sheets Trigger1').item.json.Email }}</li>   <li><strong>Score:</strong>{{ $('Parse Groq Response').item.json.ai_score }}  / 10</li>   <li><strong>Skills:</strong>{{ $('Parse Groq Response').item.json.ai_strengths }}</li> </ul>  <p>This candidate achieved a score higher than 7 and may be a good fit for the role.</p>  <p>Please review the candidate profile and CV for further evaluation.</p>  <br>  <p>Regards,<br> AI CV Screening System</p>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -16,
+        16
+      ],
+      "id": "a41c37c2-d1ff-4c97-9063-a6571d115ca0",
+      "name": "Send a message",
+      "webhookId": "e62afd64-3186-45bb-9862-2453df5743d6",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "MzljIqz0bafstECS",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Fetch CV from Drive": {
+      "main": [
+        [
+          {
+            "node": "Extract CV Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract CV Data": {
+      "main": [
+        [
+          {
+            "node": "Groq AI Screening",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq AI Screening": {
+      "main": [
+        [
+          {
+            "node": "Parse Groq Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Groq Response": {
+      "main": [
+        [
+          {
+            "node": "Create Notion Card",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Notion Card": {
+      "main": [
+        [
+          {
+            "node": "Score >= 7?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score >= 7?": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets Trigger1": {
+      "main": [
+        [
+          {
+            "node": "Fetch CV from Drive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "acae92ea-f903-4e6c-a551-0972b7bb8f31",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "c1e32bf27710289a3d2c1901ee8f33da18b3334013bec2d6d37899b4a299befe"
+  },
+  "id": "sAQClznEgIc1ypEd",
+  "tags": []
+}
